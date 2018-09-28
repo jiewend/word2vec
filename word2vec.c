@@ -28,8 +28,10 @@ const int vocab_hash_size = 30000000;  // Maximum 30 * 0.7 = 21M words in the vo
 
 typedef float real;                    // Precision of float numbers
 
+//用于存储词汇表
+// point 是词的霍夫曼树的父母节点，code 是词的在霍夫曼树中的二进制表示, codelen是code 长度
 struct vocab_word {
-  long long cn;
+  long long cn;//count number
   int *point;
   char *word, *code, codelen;
 };
@@ -125,6 +127,8 @@ int ReadWordIndex(FILE *fin, char *eof) {
 }
 
 // Adds a word to the vocabulary
+// 将词加入vocab 词汇表中，建立vocab_hash 词汇哈希表
+// vocab 是结构体，在33行定义，vocab_hash 是int 数组
 int AddWordToVocab(char *word) {
   unsigned int hash, length = strlen(word) + 1;
   if (length > MAX_STRING) length = MAX_STRING;
@@ -139,6 +143,7 @@ int AddWordToVocab(char *word) {
   }
   hash = GetWordHash(word);
   while (vocab_hash[hash] != -1) hash = (hash + 1) % vocab_hash_size;
+  // vocab_hash 数组 索引是哈希值，值是词在词汇表中的索引值
   vocab_hash[hash] = vocab_size - 1;
   return vocab_size - 1;
 }
@@ -152,6 +157,7 @@ int VocabCompare(const void *a, const void *b) {
 }
 
 // Sorts the vocabulary by frequency using word counts
+// 按词频将每个词排序，丢弃少于min_count 的词，之后重新计算哈希值。
 void SortVocab() {
   int a, size;
   unsigned int hash;
@@ -173,6 +179,7 @@ void SortVocab() {
       train_words += vocab[a].cn;
     }
   }
+  // 重新分配内存，释放由于丢弃词汇占用的内存,relloc用法
   vocab = (struct vocab_word *)realloc(vocab, (vocab_size + 1) * sizeof(struct vocab_word));
   // Allocate memory for the binary tree construction
   for (a = 0; a < vocab_size; a++) {
@@ -207,6 +214,7 @@ void ReduceVocab() {
 void CreateBinaryTree() {
   long long a, b, i, min1i, min2i, pos1, pos2, point[MAX_CODE_LENGTH];
   char code[MAX_CODE_LENGTH];
+  // 分配的内存是vocab_size 的两倍，所以后面不会越界
   long long *count = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
   long long *binary = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
   long long *parent_node = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
@@ -269,6 +277,7 @@ void CreateBinaryTree() {
   free(parent_node);
 }
 
+// 从训练语料中构建词汇表, 词汇表在声明在33行
 void LearnVocabFromTrainFile() {
   char word[MAX_STRING], eof = 0;
   FILE *fin;
@@ -314,6 +323,7 @@ void SaveVocab() {
   fclose(fo);
 }
 
+// 读取已有词汇表，
 void ReadVocab() {
   long long a, i = 0;
   char c, eof = 0;
@@ -326,8 +336,10 @@ void ReadVocab() {
   for (a = 0; a < vocab_hash_size; a++) vocab_hash[a] = -1;
   vocab_size = 0;
   while (1) {
+    //从fin 流中读取一个单词，放入word中  
     ReadWord(word, fin, &eof);
     if (eof) break;
+    // 将word 放入 词汇表
     a = AddWordToVocab(word);
     fscanf(fin, "%lld%c", &vocab[a].cn, &c);
     i++;
@@ -347,6 +359,9 @@ void ReadVocab() {
   fclose(fin);
 }
 
+// 初始化神经网络
+// vocab_size 神经网络输入层大小
+// layer1_size 神经网络隐藏层大小
 void InitNet() {
   long long a, b;
   unsigned long long next_random = 1;
@@ -364,6 +379,7 @@ void InitNet() {
     for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++)
      syn1neg[a * layer1_size + b] = 0;
   }
+  // 随机初始化隐层参数，使用伪随机数 Y = （a * X + c）mod m, a = 25214903917, c = 11, m = 2^48
   for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++) {
     next_random = next_random * (unsigned long long)25214903917 + 11;
     syn0[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
@@ -706,6 +722,7 @@ int main(int argc, char **argv) {
   vocab = (struct vocab_word *)calloc(vocab_max_size, sizeof(struct vocab_word));
   vocab_hash = (int *)calloc(vocab_hash_size, sizeof(int));
   expTable = (real *)malloc((EXP_TABLE_SIZE + 1) * sizeof(real));
+  //提前计算sigmoid 函数，用于后续查表
   for (i = 0; i < EXP_TABLE_SIZE; i++) {
     expTable[i] = exp((i / (real)EXP_TABLE_SIZE * 2 - 1) * MAX_EXP); // Precompute the exp() table
     expTable[i] = expTable[i] / (expTable[i] + 1);                   // Precompute f(x) = x / (x + 1)
