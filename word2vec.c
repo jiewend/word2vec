@@ -51,11 +51,14 @@ int hs = 0, negative = 5;
 const int table_size = 1e8;
 int *table;
 
+// 对所有词计算负样本采样的概率，存入分段的table 中
 void InitUnigramTable() {
   int a, i;
   double train_words_pow = 0;
   double d1, power = 0.75;
   table = (int *)malloc(table_size * sizeof(int));
+  // 对每一个词计算其负采样频率neg = count(w)^0.75 / sum(count(W)^0.75 );
+  // 对每个词的neg, 将table 数组里的一段分配给这个词，赋值为词的序号 i;
   for (a = 0; a < vocab_size; a++) train_words_pow += pow(vocab[a].cn, power);
   i = 0;
   d1 = pow(vocab[i].cn, power) / train_words_pow;
@@ -68,7 +71,7 @@ void InitUnigramTable() {
     if (i >= vocab_size) i = vocab_size - 1;
   }
 }
-
+// 从文件中读取单个词，空格，缩进，和EOL 作为单词之间的间隔。
 // Reads a single word from a file, assuming space + tab + EOL to be word boundaries
 void ReadWord(char *word, FILE *fin, char *eof) {
   int a = 0, ch;
@@ -188,6 +191,7 @@ void SortVocab() {
   }
 }
 
+// 缩进词汇表，去除不常见的词
 // Reduces the vocabulary by removing infrequent tokens
 void ReduceVocab() {
   int a, b = 0;
@@ -209,19 +213,22 @@ void ReduceVocab() {
   min_reduce++;
 }
 
+// 对词汇表和相应的词频建立霍夫曼树，并生成霍夫曼编码
 // Create binary Huffman tree using the word counts
 // Frequent words will have short uniqe binary codes
 void CreateBinaryTree() {
   long long a, b, i, min1i, min2i, pos1, pos2, point[MAX_CODE_LENGTH];
   char code[MAX_CODE_LENGTH];
-  // 分配的内存是vocab_size 的两倍，所以后面不会越界
+  // 分配的内存是vocab_size 的两倍 + 1，所以后面不会越界
   long long *count = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
   long long *binary = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
   long long *parent_node = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
+  // 将 count 前半部分初始化为词频
   for (a = 0; a < vocab_size; a++) count[a] = vocab[a].cn;
+  // 将 count 后半部分初始化为很大的数 1e15
   for (a = vocab_size; a < vocab_size * 2; a++) count[a] = 1e15;
-  pos1 = vocab_size - 1;
-  pos2 = vocab_size;
+  pos1 = vocab_size - 1;//post1 指向最后一个词频
+  pos2 = vocab_size; // post2 指向第一个 1e15
   // Following algorithm constructs the Huffman tree by adding one node at a time
   for (a = 0; a < vocab_size - 1; a++) {
     // First, find two smallest nodes 'min1, min2'
@@ -249,12 +256,13 @@ void CreateBinaryTree() {
       min2i = pos2;
       pos2++;
     }
-    count[vocab_size + a] = count[min1i] + count[min2i];
-    parent_node[min1i] = vocab_size + a;
-    parent_node[min2i] = vocab_size + a;
-    binary[min2i] = 1;
+    count[vocab_size + a] = count[min1i] + count[min2i];// 生成min1i 和 mini2 的父节点
+    parent_node[min1i] = vocab_size + a;// 设置 mini1 父节点
+    parent_node[min2i] = vocab_size + a; // 设置 mini2 父节点
+    binary[min2i] = 1; // 设置一个子树的编码为 1 ， 那另一个默认为 0 ？
   }
   // Now assign binary code to each vocabulary word
+  // 从霍夫曼树中生成霍夫曼编码，分配给每个词
   for (a = 0; a < vocab_size; a++) {
     b = a;
     i = 0;
@@ -267,6 +275,7 @@ void CreateBinaryTree() {
     }
     vocab[a].codelen = i;
     vocab[a].point[0] = vocab_size - 2;
+    // 将霍夫曼编码存入词汇表的数据结构 vocab 中
     for (b = 0; b < i; b++) {
       vocab[a].code[i - b - 1] = code[b];
       vocab[a].point[i - b] = point[b] - vocab_size;
@@ -366,15 +375,18 @@ void InitNet() {
   long long a, b;
   unsigned long long next_random = 1;
   a = posix_memalign((void **)&syn0, 128, (long long)vocab_size * layer1_size * sizeof(real));
+  //syn0 是隐藏层和输入层之间的权重，即词向量，初始化为伪随机数
   if (syn0 == NULL) {printf("Memory allocation failed\n"); exit(1);}
   if (hs) {
     a = posix_memalign((void **)&syn1, 128, (long long)vocab_size * layer1_size * sizeof(real));
+    //syn1 是层次softmax， 初始化为 0
     if (syn1 == NULL) {printf("Memory allocation failed\n"); exit(1);}
     for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++)
      syn1[a * layer1_size + b] = 0;
   }
   if (negative>0) {
     a = posix_memalign((void **)&syn1neg, 128, (long long)vocab_size * layer1_size * sizeof(real));
+    //syn1neg 是负样本采样初始化为 0
     if (syn1neg == NULL) {printf("Memory allocation failed\n"); exit(1);}
     for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++)
      syn1neg[a * layer1_size + b] = 0;
@@ -398,6 +410,7 @@ void *TrainModelThread(void *id) {
   real *neu1 = (real *)calloc(layer1_size, sizeof(real));
   real *neu1e = (real *)calloc(layer1_size, sizeof(real));
   FILE *fi = fopen(train_file, "rb");
+  // 给每个线程分配一部分数据，找到本线程的数据
   fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
   while (1) {
     if (word_count - last_word_count > 10000) {
@@ -457,46 +470,47 @@ void *TrainModelThread(void *id) {
         if (c >= sentence_length) continue;
         last_word = sen[c];
         if (last_word == -1) continue;
+        // cbow的映射层，将所有窗口内的词向量相加，即把输入到隐层的权重相加
         for (c = 0; c < layer1_size; c++) neu1[c] += syn0[c + last_word * layer1_size];
         cw++;
       }
       if (cw) {
-        for (c = 0; c < layer1_size; c++) neu1[c] /= cw;
+        for (c = 0; c < layer1_size; c++) neu1[c] /= cw;// 映射层取累加后的平均值
         if (hs) for (d = 0; d < vocab[word].codelen; d++) {
           f = 0;
           l2 = vocab[word].point[d] * layer1_size;
           // Propagate hidden -> output
-          for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1[c + l2];
+          for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1[c + l2]; //前向传播，映射层和隐层到输出层的权重相乘
           if (f <= -MAX_EXP) continue;
           else if (f >= MAX_EXP) continue;
-          else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
+          else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];//如果在范围内则查表
           // 'g' is the gradient multiplied by the learning rate
-          g = (1 - vocab[word].code[d] - f) * alpha;
+          g = (1 - vocab[word].code[d] - f) * alpha;// 梯度公式
           // Propagate errors output -> hidden
-          for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
+          for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];//反向传播 输出层-》隐层
           // Learn weights hidden -> output
-          for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * neu1[c];
+          for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * neu1[c]; // 更新输出到隐层的权重
         }
         // NEGATIVE SAMPLING
         if (negative > 0) for (d = 0; d < negative + 1; d++) {
           if (d == 0) {
             target = word;
-            label = 1;
+            label = 1; //正样本记为 1
           } else {
             next_random = next_random * (unsigned long long)25214903917 + 11;
             target = table[(next_random >> 16) % table_size];
             if (target == 0) target = next_random % (vocab_size - 1) + 1;
             if (target == word) continue;
-            label = 0;
+            label = 0;//负样本记为 0
           }
           l2 = target * layer1_size;
           f = 0;
           for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1neg[c + l2];
           if (f > MAX_EXP) g = (label - 1) * alpha;
           else if (f < -MAX_EXP) g = (label - 0) * alpha;
-          else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
-          for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
-          for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * neu1[c];
+          else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;//梯度公式
+          for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];//反向传播，输出层—》隐层
+          for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * neu1[c]; //更新输出层到隐层的权重
         }
         // hidden -> in
         for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
@@ -505,10 +519,14 @@ void *TrainModelThread(void *id) {
           if (c >= sentence_length) continue;
           last_word = sen[c];
           if (last_word == -1) continue;
+          //反向传播，更新输入层到隐层的权重，即更新词向量
           for (c = 0; c < layer1_size; c++) syn0[c + last_word * layer1_size] += neu1e[c];
         }
       }
     } else {  //train skip-gram
+        // 相比于cbow ，skip-gram 模型少了将窗口内的词向量累加平均的映射层
+        // cbow 的循环是将窗口内的词向量累加，之后更新一次词向量
+        // skip-gram 的循环是使用窗口内的词更新多词词向量，一次更新中，层次 softmax 和负样本采样的实现一致
       for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
         c = sentence_position - window + a;
         if (c < 0) continue;
